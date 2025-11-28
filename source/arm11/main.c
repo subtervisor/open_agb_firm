@@ -24,9 +24,11 @@
 #include "arm11/console.h"
 #include "arm11/drivers/codec.h"
 #include "arm11/drivers/hid.h"
+#include "arm11/drivers/mcu.h"
 #include "arm11/power.h"
+#include "arm11/config.h"
 
-
+static u8 batteryFrames = 0;
 
 int main(void)
 {
@@ -44,6 +46,15 @@ int main(void)
 			if(hidGetExtraKeys(0) & (KEY_POWER_HELD | KEY_POWER)) break;
 
 			oafUpdate();
+
+			// Every 128 frames, check battery level and exit early to let save data flush properly.
+			if (++batteryFrames % 128 == 0) {
+				batteryFrames = 0;
+				u8 currentBatteryLevel = MCU_readReg(0x0B);
+				u8 batteryFlags = MCU_readReg(0x0F);
+				bool currentlyCharging = batteryFlags & (1 << 4);
+				if (!currentlyCharging && currentBatteryLevel < g_oafConfig.minBat) break;
+			}
 		}
 
 		oafFinish();

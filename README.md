@@ -69,6 +69,9 @@ General settings.
 `bool useSavesFolder` - Use `/3ds/open_agb_firm/saves` for save files instead of the ROM directory.
 * Default: `true`
 
+`u8 minBat` - Minimum battery percentage. If the battery is below this level while unplugged, the game will exit to ensure save data is flushed to SD.
+* Default: `3`
+
 ### Video
 Video-related settings.
 
