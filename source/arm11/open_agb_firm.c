@@ -320,7 +320,7 @@ Result oafInitAndRun(void)
 		if(res == RES_FR_NO_FILE)
 		{
 			res = showFileBrowser(&romFilePath);
-			if(res != RES_OK || *romFilePath == '\0') break;
+			if(res != RES_OK || !romFilePath || *romFilePath == '\0') break;
 			ee_puts("Loading...");
 		}
 		else if(res != RES_OK) break;
