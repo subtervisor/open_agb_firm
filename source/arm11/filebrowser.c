@@ -109,7 +109,10 @@ int dlistCompare(const void *a, const void *b)
 static Result scanDir(const char *const path, const char *const filter, DirList **dListOut)
 {
     if(dListOut == NULL) return RES_INVALID_ARG;
-    if(*dListOut != NULL) fcramFree(*dlistOut); // handle freeing old one
+    if(*dListOut != NULL) {
+        fcramFree(*dlistOut);
+        *dlistOut = NULL;
+    }
 	FILINFO *const fis = (FILINFO*)fcramAlloc(sizeof(FILINFO) * DIR_READ_BLOCKS);
 	if(fis == NULL) return RES_OUT_OF_MEM;
 	DirList *dList = dlistNew();
