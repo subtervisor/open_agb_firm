@@ -294,7 +294,7 @@ Result browseFiles(const char *const basePath, char **selected, char **lastPath)
 					curDir = pathAppend(curDir, &curDirCapacity, dList->entries[cursorPos].name);
 					if (!curDir)
 					{
-						fcramFree(lastPathBuf);
+						free(lastPathBuf);
 						res = RES_OUT_OF_MEM;
 						goto end;
 					}
