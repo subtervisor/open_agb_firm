@@ -196,10 +196,8 @@ char *pathAppend(char *src, size_t *srcSize, char *dst)
 	size_t newLen = srcLen + dstLen + (addSlash ? 2 : 1);
 	if (newLen >= *srcSize)
 	{
-		char *newSrc = (char*)fcramAlloc(newLen);
+		char *newSrc = (char*)realloc(src, newLen);
 		if (!newSrc)  goto bail;
-		memcpy(newSrc, src, *srcSize);
-		fcramFree(src);
 		src = newSrc;
 		*srcSize = newLen;
 	}
@@ -209,7 +207,7 @@ char *pathAppend(char *src, size_t *srcSize, char *dst)
 	src[srcLen + dstLen] = '\0';
 	return src;
 bail:
-	fcramFree(src);
+	free(src);
 	return NULL;
 }
 
@@ -217,7 +215,7 @@ Result browseFiles(const char *const basePath, char **selected, char **lastPath)
 {
 	if(basePath == NULL || selected == NULL || lastPath == NULL) return RES_INVALID_ARG;
 
-	char *curDir = (char*)fcramAlloc(512);
+	char *curDir = (char*)malloc(512);
 	size_t curDirCapacity = 512;
 	if(curDir == NULL) return RES_OUT_OF_MEM;
 	safeStrcpy(curDir, basePath, 512);
@@ -286,7 +284,7 @@ Result browseFiles(const char *const basePath, char **selected, char **lastPath)
 
 				if(dList->entries[cursorPos].type == ENTRY_FILE)
 				{
-					char *lastPathBuf = fcramAlloc(strlen(curDir) + 1);
+					char *lastPathBuf = malloc(strlen(curDir) + 1);
 					if(!lastPathBuf)
 					{
 						res = RES_OUT_OF_MEM;
@@ -336,7 +334,7 @@ end:
 	}
 	if (curDir != NULL)
 	{
-		fcramFree(curDir);
+		free(curDir);
 	}
 	// Clear screen.
 	ee_printf("\x1b[2J");
