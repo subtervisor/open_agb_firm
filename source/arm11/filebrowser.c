@@ -215,10 +215,10 @@ Result browseFiles(const char *const basePath, char **selected, char **lastPath)
 {
 	if(basePath == NULL || selected == NULL || lastPath == NULL) return RES_INVALID_ARG;
 
-	char *curDir = (char*)malloc(512);
-	size_t curDirCapacity = 512;
+	size_t curDirCapacity = strlen(basePath) + 1;
+	char *curDir = (char*)malloc(curDirCapacity);
 	if(curDir == NULL) return RES_OUT_OF_MEM;
-	safeStrcpy(curDir, basePath, 512);
+	safeStrcpy(curDir, basePath, curDirCapacity);
 
 	DirList *dList = NULL;
 	Result res;
