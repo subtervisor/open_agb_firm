@@ -22,6 +22,7 @@
 #include "error_codes.h"
 #include "fs.h"
 #include "util.h"
+#include "arm11/allocator/fcram.h"
 #include "arm11/drivers/hid.h"
 #include "arm11/fmt.h"
 #include "drivers/gfx.h"
@@ -51,7 +52,7 @@ typedef struct {
 
 DirList *dlistNew()
 {
-	DirList *dlist = malloc(sizeof(DirList) + (sizeof(DirEntry) * DLIST_GROW_SIZE));
+	DirList *dlist = fcramAlloc(sizeof(DirList) + (sizeof(DirEntry) * DLIST_GROW_SIZE));
 	if (!dlist)
 		return NULL;
 	dlist->capacity = DLIST_GROW_SIZE;
@@ -63,21 +64,23 @@ void dlistFree(DirList *dlist)
 {
 	for (u32 i = 0; i < dlist->size; i++)
 	{
-		free(dlist->entries[i].name);
+		fcramFree(dlist->entries[i].name);
 	}
-	free(dlist);
+	fcramFree(dlist);
 }
 
 DirList *dlistGrow(DirList *dlist)
 {
 	size_t newCapacity = dlist->capacity + DLIST_GROW_SIZE;
-	DirList *newList = realloc(dlist, sizeof(DirList) + (sizeof(DirEntry) * newCapacity));
+	DirList *newList = fcramAlloc(sizeof(DirList) + (sizeof(DirEntry) * newCapacity));
 	if (!newList)
 	{
-		free(dlist);
+		fcramFree(dlist);
 		return NULL;
 	}
 	newList->capacity = newCapacity;
+	memcpy(newList->entries, dlist->entries, sizeof(DirEntry) * dlist->size);
+	fcramFree(dlist);
 	return newList;
 }
 
@@ -105,7 +108,7 @@ int dlistCompare(const void *a, const void *b)
 
 static Result scanDir(const char *const path, const char *const filter, DirList **dListOut)
 {
-	FILINFO *const fis = (FILINFO*)malloc(sizeof(FILINFO) * DIR_READ_BLOCKS);
+	FILINFO *const fis = (FILINFO*)fcramAlloc(sizeof(FILINFO) * DIR_READ_BLOCKS);
 	if(fis == NULL) return RES_OUT_OF_MEM;
 	DirList *dList = dlistNew();
 	if(!dList) return RES_OUT_OF_MEM;
@@ -140,7 +143,7 @@ static Result scanDir(const char *const path, const char *const filter, DirList 
 						goto bail;
 					}
 				}
-				dList->entries[numEntries].name = (char*)malloc(nameLen + 1);
+				dList->entries[numEntries].name = (char*)fcramAlloc(nameLen + 1);
 				if(!dList->entries[numEntries].name)
 				{
 					res = RES_OUT_OF_MEM;
@@ -155,7 +158,7 @@ static Result scanDir(const char *const path, const char *const filter, DirList 
 		fCloseDir(dh);
 	}
 
-	free(fis);
+	fcramFree(fis);
 
 	qsort(dList->entries, dList->size, sizeof(DirEntry), dlistCompare);
 
@@ -164,7 +167,7 @@ static Result scanDir(const char *const path, const char *const filter, DirList 
 	return res;
 bail:
 	fCloseDir(dh);
-	free(fis);
+	fcramFree(fis);
 	dlistFree(dList);
 	return res;
 }
@@ -193,8 +196,10 @@ char *pathAppend(char *src, size_t *srcSize, char *dst)
 	size_t newLen = srcLen + dstLen + (addSlash ? 2 : 1);
 	if (newLen >= *srcSize)
 	{
-		char *newSrc = (char*)realloc(src, newLen);
+		char *newSrc = (char*)fcramAlloc(newLen);
 		if (!newSrc)  goto bail;
+		memcpy(newSrc, src, *srcSize);
+		fcramFree(src);
 		src = newSrc;
 		*srcSize = newLen;
 	}
@@ -204,7 +209,7 @@ char *pathAppend(char *src, size_t *srcSize, char *dst)
 	src[srcLen + dstLen] = '\0';
 	return src;
 bail:
-	free(src);
+	fcramFree(src);
 	return NULL;
 }
 
@@ -212,7 +217,7 @@ Result browseFiles(const char *const basePath, char **selected, char **lastPath)
 {
 	if(basePath == NULL || selected == NULL || lastPath == NULL) return RES_INVALID_ARG;
 
-	char *curDir = (char*)malloc(512);
+	char *curDir = (char*)fcramAlloc(512);
 	size_t curDirCapacity = 512;
 	if(curDir == NULL) return RES_OUT_OF_MEM;
 	safeStrcpy(curDir, basePath, 512);
@@ -281,7 +286,7 @@ Result browseFiles(const char *const basePath, char **selected, char **lastPath)
 
 				if(dList->entries[cursorPos].type == ENTRY_FILE)
 				{
-					char *lastPathBuf = malloc(strlen(curDir) + 1);
+					char *lastPathBuf = fcramAlloc(strlen(curDir) + 1);
 					if(!lastPathBuf)
 					{
 						res = RES_OUT_OF_MEM;
@@ -291,7 +296,7 @@ Result browseFiles(const char *const basePath, char **selected, char **lastPath)
 					curDir = pathAppend(curDir, &curDirCapacity, dList->entries[cursorPos].name);
 					if (!curDir)
 					{
-						free(lastPathBuf);
+						fcramFree(lastPathBuf);
 						res = RES_OUT_OF_MEM;
 						goto end;
 					}
@@ -331,7 +336,7 @@ end:
 	}
 	if (curDir != NULL)
 	{
-		free(curDir);
+		fcramFree(curDir);
 	}
 	// Clear screen.
 	ee_printf("\x1b[2J");
