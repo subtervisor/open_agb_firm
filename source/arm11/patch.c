@@ -21,6 +21,7 @@
 #include "types.h"
 #include "oaf_error_codes.h"
 #include "util.h"
+#include "arm11/open_agb_firm.h"
 #include "arm11/drivers/hid.h"
 #ifndef NDEBUG
 #include "arm11/drivers/mcu.h"

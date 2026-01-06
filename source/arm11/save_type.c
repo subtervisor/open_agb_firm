@@ -18,6 +18,7 @@
 
 #include <string.h>
 #include "types.h"
+#include "arm11/open_agb_firm.h"
 #include "arm11/save_type.h"
 #include "drivers/lgy_common.h"
 #include "arm11/fmt.h"

@@ -22,6 +22,7 @@
 #include "error_codes.h"
 #include "fs.h"
 #include "util.h"
+#include "arm11/open_agb_firm.h"
 #include "arm11/drivers/hid.h"
 #include "arm11/fmt.h"
 #include "drivers/gfx.h"
