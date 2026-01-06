@@ -255,7 +255,7 @@ u16 getSaveType(const OafConfig *const cfg, const u32 romSize, const char *const
 			GFX_waitForVBlank0();
 
 			hidScanInput();
-			if(hidGetExtraKeys(0) & (KEY_POWER_HELD | KEY_POWER)) goto end;
+			if(shouldExit(hidGetExtraKeys(0))) goto end;
 			kDown = hidKeysDown();
 		} while(kDown == 0);
 

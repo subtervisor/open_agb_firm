@@ -167,7 +167,7 @@ Result browseFiles(const char *const basePath, char selected[512])
 			GFX_waitForVBlank0();
 
 			hidScanInput();
-			if(hidGetExtraKeys(0) & (KEY_POWER_HELD | KEY_POWER)) goto end;
+			if(shouldExit(hidGetExtraKeys(0))) goto end;
 			kDown = hidKeysDown();
 		} while(kDown == 0);
 
