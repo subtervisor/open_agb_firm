@@ -372,7 +372,15 @@ static inline void setPixelBGR8(u8 *const fb, const u32 x, const u32 y, const u8
 
 static void drawBatteryIndicator(u8 *const fb)
 {
-	const u8 level = MCU_getBatteryLevel();
+	// Cache battery level, refresh roughly every 2 seconds (~120 frames at 60 fps).
+	static u8 cachedLevel = 0;
+	static u32 frameCount = 120; // Force initial read.
+	if(++frameCount >= 120)
+	{
+		frameCount = 0;
+		cachedLevel = MCU_getBatteryLevel();
+	}
+	const u8 level = cachedLevel;
 
 	// Choose color based on level: green >= 30, yellow >= 15, red < 15.
 	u8 r, g, b;
