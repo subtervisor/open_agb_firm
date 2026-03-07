@@ -361,86 +361,98 @@ static const u8 g_digitFont[10][5] =
 	{0x7, 0x5, 0x7, 0x1, 0x7}, // 9
 };
 
-// Set a pixel in the BGR8 framebuffer. Screen coords (x=0..399, y=0..239).
-static inline void setPixelBGR8(u8 *const fb, const u32 x, const u32 y, const u8 b, const u8 g, const u8 r)
+// Set a pixel in the tiled BGR8 GPU render buffer.
+// The render buffer matches the linear framebuffer layout but in 8x8 Morton-order tiles.
+// Linear framebuffer: pixel at screen (x, y) is at byte ((x * 240) + (239 - y)) * 3.
+// So the tiled buffer "width" is 240 and "height" is 400 (LCD is rotated 90 CCW).
+// Tiles are arranged in row-major order: 30 tiles across (240/8), 50 tiles down (400/8).
+static inline void setPixelTiled(u8 *const buf, const u32 screenX, const u32 screenY, const u8 b, const u8 g, const u8 r)
 {
-	u8 *const px = &fb[((x * 240) + (239 - y)) * 3];
-	px[0] = b;
-	px[1] = g;
-	px[2] = r;
+	// Convert screen coords to tiled buffer coords.
+	const u32 bufX = 239 - screenY; // 0..239, along buffer width
+	const u32 bufY = screenX;       // 0..399, along buffer height
+
+	// Tile position and pixel within tile.
+	const u32 tileX = bufX >> 3;
+	const u32 tileY = bufY >> 3;
+	const u32 inX = bufX & 7;
+	const u32 inY = bufY & 7;
+
+	// PICA200 Morton (Z-order) index within 8x8 tile.
+	// x bits in even positions, y bits in odd positions.
+	const u32 morton = (inX & 1) | ((inY & 1) << 1)
+	                 | ((inX & 2) << 1) | ((inY & 2) << 2)
+	                 | ((inX & 4) << 2) | ((inY & 4) << 3);
+
+	const u32 tileIdx = tileY * (240 / 8) + tileX;
+	const u32 offset = (tileIdx * 64 + morton) * 3;
+
+	buf[offset]     = b;
+	buf[offset + 1] = g;
+	buf[offset + 2] = r;
 }
 
-static void drawBatteryIndicator(u8 *const fb)
+// Region covered by the battery indicator (fixed bounds for cache flush).
+#define BATT_REGION_X  (357u) // Leftmost x of text area ("100%") = 400 - 24 - 15 - 2 = 359, with margin 357
+#define BATT_REGION_Y  (3u)
+#define BATT_REGION_W  (43u)  // To x=399
+#define BATT_REGION_H  (9u)
+
+static void drawBatteryRegion(u8 *const buf, const bool draw)
 {
-	// Cache battery level, refresh roughly every 2 seconds (~120 frames at 60 fps).
-	static u8 cachedLevel = 0;
-	static u32 frameCount = 120; // Force initial read.
-	if(++frameCount >= 120)
-	{
-		frameCount = 0;
-		cachedLevel = MCU_getBatteryLevel();
-	}
-	const u8 level = cachedLevel;
+	// Clear the entire indicator region to black first.
+	for(u32 sy = BATT_REGION_Y; sy < BATT_REGION_Y + BATT_REGION_H; sy++)
+		for(u32 sx = BATT_REGION_X; sx < BATT_REGION_X + BATT_REGION_W; sx++)
+			setPixelTiled(buf, sx, sy, 0, 0, 0);
+
+	if(!draw) goto flush;
+
+	const u8 level = MCU_getBatteryLevel();
 
 	// Choose color based on level: green >= 30, yellow >= 15, red < 15.
-	u8 r, g, b;
-	if(level >= 30)      { r = 60;  g = 200; b = 60;  }
-	else if(level >= 15) { r = 220; g = 200; b = 20;  }
-	else                 { r = 220; g = 40;  b = 40;  }
+	u8 cr, cg, cb;
+	if(level >= 30)      { cr = 60;  cg = 200; cb = 60;  }
+	else if(level >= 15) { cr = 220; cg = 200; cb = 20;  }
+	else                 { cr = 220; cg = 40;  cb = 40;  }
 
-	// Battery icon position: top-right corner of screen.
-	// Screen is 400x240. Place icon at right side with some margin.
-	// Icon: 18x9 battery body + 2x3 terminal nub.
-	const u32 iconX = 400 - 24; // x start of battery body
-	const u32 iconY = 3;        // y start
+	// Battery icon: 18x9 body + 1x3 terminal nub, top-right corner.
+	const u32 iconX = 400 - 24;
+	const u32 iconY = 3;
+	const u32 ow = 18, oh = 9;
 
-	// Draw battery outline (white).
-	const u8 ow = 18, oh = 9;
+	// Outline.
 	for(u32 dx = 0; dx < ow; dx++)
 	{
-		setPixelBGR8(fb, iconX + dx, iconY,          255, 255, 255); // top
-		setPixelBGR8(fb, iconX + dx, iconY + oh - 1, 255, 255, 255); // bottom
+		setPixelTiled(buf, iconX + dx, iconY,          255, 255, 255);
+		setPixelTiled(buf, iconX + dx, iconY + oh - 1, 255, 255, 255);
 	}
 	for(u32 dy = 0; dy < oh; dy++)
 	{
-		setPixelBGR8(fb, iconX,          iconY + dy, 255, 255, 255); // left
-		setPixelBGR8(fb, iconX + ow - 1, iconY + dy, 255, 255, 255); // right
+		setPixelTiled(buf, iconX,          iconY + dy, 255, 255, 255);
+		setPixelTiled(buf, iconX + ow - 1, iconY + dy, 255, 255, 255);
 	}
 
-	// Terminal nub on right side.
+	// Terminal nub.
 	for(u32 dy = 3; dy <= 5; dy++)
-		setPixelBGR8(fb, iconX + ow, iconY + dy, 255, 255, 255);
+		setPixelTiled(buf, iconX + ow, iconY + dy, 255, 255, 255);
 
-	// Fill interior based on level. Interior is 16x7, starts at (iconX+1, iconY+1).
-	const u32 fillW = (16 * level + 50) / 100; // round
+	// Fill interior (16x7) based on level.
+	const u32 fillW = (16 * level + 50) / 100;
 	for(u32 dy = 1; dy <= 7; dy++)
-	{
 		for(u32 dx = 1; dx < 1 + fillW; dx++)
-			setPixelBGR8(fb, iconX + dx, iconY + dy, b, g, r);
-		for(u32 dx = 1 + fillW; dx <= 16; dx++)
-			setPixelBGR8(fb, iconX + dx, iconY + dy, 0, 0, 0);
-	}
+			setPixelTiled(buf, iconX + dx, iconY + dy, cb, cg, cr);
 
-	// Draw percentage text to the left of the battery icon.
-	// Format: up to "100%" — using 3x5 font scaled 1x, with 1px spacing.
+	// Percentage text to the left of the icon.
 	char numStr[4];
 	u32 numLen;
 	if(level >= 100)     { numStr[0] = '1'; numStr[1] = '0'; numStr[2] = '0'; numLen = 3; }
 	else if(level >= 10) { numStr[0] = '0' + level / 10; numStr[1] = '0' + level % 10; numLen = 2; }
 	else                 { numStr[0] = '0' + level; numLen = 1; }
 
-	// '%' sign: just draw a simple 3x5 percent glyph.
 	static const u8 percentGlyph[5] = {0x5, 0x1, 0x2, 0x4, 0x5};
-
-	// Total width: numLen * 4 + 4 (percent sign) - 1.
 	const u32 textW = numLen * 4 + 3;
 	const u32 textX = iconX - textW - 2;
-	const u32 textY = iconY + 2; // vertically center with icon
-
-	// Clear background behind text.
-	for(u32 dy = 0; dy < 5; dy++)
-		for(u32 dx = 0; dx < textW; dx++)
-			setPixelBGR8(fb, textX + dx, textY + dy, 0, 0, 0);
+	const u32 textY = iconY + 2;
 
 	// Draw digits.
 	u32 cx = textX;
@@ -450,15 +462,26 @@ static void drawBatteryIndicator(u8 *const fb)
 		for(u32 dy = 0; dy < 5; dy++)
 			for(u32 dx = 0; dx < 3; dx++)
 				if(glyph[dy] & (4 >> dx))
-					setPixelBGR8(fb, cx + dx, textY + dy, 255, 255, 255);
+					setPixelTiled(buf, cx + dx, textY + dy, 255, 255, 255);
 		cx += 4;
 	}
 
-	// Draw percent sign.
+	// Percent sign.
 	for(u32 dy = 0; dy < 5; dy++)
 		for(u32 dx = 0; dx < 3; dx++)
 			if(percentGlyph[dy] & (4 >> dx))
-				setPixelBGR8(fb, cx + dx, textY + dy, 255, 255, 255);
+				setPixelTiled(buf, cx + dx, textY + dy, 255, 255, 255);
+
+flush:
+	// Flush the affected region of the render buffer from cache.
+	// Conservative: flush from the tile row containing BATT_REGION_X to end of buffer.
+	{
+		const u32 startTileRow = BATT_REGION_X / 8;
+		const u32 tilesPerRow = 240 / 8;
+		const u32 startOffset = startTileRow * tilesPerRow * 64 * 3;
+		flushDCacheRange((u8*)GPU_RENDER_BUF_ADDR + startOffset,
+		                 240 * 400 * 3 - startOffset);
+	}
 }
 
 static void convFinishedHandler(UNUSED const u32 intSource)
@@ -503,24 +526,54 @@ static void gbaGfxHandler(void *args)
 		}
 		GX_processCommandList(listSize, list);
 		GFX_waitForP3D();
-		GX_displayTransfer((u32*)GPU_RENDER_BUF_ADDR, PPF_DIM(240, 400), GFX_getBuffer(GFX_LCD_TOP, GFX_SIDE_LEFT),
-		                   PPF_DIM(240, 400), PPF_O_FMT(GX_BGR8) | PPF_I_FMT(GX_BGR8));
-		GFX_waitForPPF();
+		// Update battery indicator in the render buffer before display transfer.
+		// Only redraw on toggle or when the cached level changes (~every 2 seconds).
+		{
+			const u32 kHeld = hidKeysHeld();
+			const u32 kDown = hidKeysDown();
+			bool toggled = false;
+			if(kHeld == (KEY_X | KEY_SELECT) && kDown != 0)
+			{
+				g_showBattery = !g_showBattery;
+				toggled = true;
+			}
 
-		// Toggle battery indicator with SELECT+X.
-		const u32 kHeld = hidKeysHeld();
-		const u32 kDown = hidKeysDown();
-		if(kHeld == (KEY_X | KEY_SELECT) && kDown != 0)
-			g_showBattery = !g_showBattery;
+			static u8 prevLevel = 0;
+			static u32 frameCount = 0;
+			if(g_showBattery)
+			{
+				// Refresh battery level roughly every 2 seconds.
+				bool needsRedraw = toggled;
+				if(++frameCount >= 120)
+				{
+					frameCount = 0;
+					const u8 newLevel = MCU_getBatteryLevel();
+					if(newLevel != prevLevel)
+					{
+						prevLevel = newLevel;
+						needsRedraw = true;
+					}
+				}
 
-		if(g_showBattery)
-			drawBatteryIndicator((u8*)GFX_getBuffer(GFX_LCD_TOP, GFX_SIDE_LEFT));
+				if(needsRedraw)
+					drawBatteryRegion((u8*)GPU_RENDER_BUF_ADDR, true);
+			}
+			else if(toggled)
+			{
+				// Just toggled off — clear the region.
+				drawBatteryRegion((u8*)GPU_RENDER_BUF_ADDR, false);
+				frameCount = 0;
+			}
 
-		GFX_swapBuffers();
+			GX_displayTransfer((u32*)GPU_RENDER_BUF_ADDR, PPF_DIM(240, 400), GFX_getBuffer(GFX_LCD_TOP, GFX_SIDE_LEFT),
+			                   PPF_DIM(240, 400), PPF_O_FMT(GX_BGR8) | PPF_I_FMT(GX_BGR8));
+			GFX_waitForPPF();
+			GFX_swapBuffers();
 
-		// Trigger only if both are held and at least one is detected as newly pressed down.
-		if(kHeld == (KEY_Y | KEY_SELECT) && kDown != 0)
-			dumpFrameTex();
+			// Trigger only if both are held and at least one is detected as newly pressed down.
+			if(kHeld == (KEY_Y | KEY_SELECT) && kDown != 0)
+				dumpFrameTex();
+		}
 	}
 
 	taskExit();
