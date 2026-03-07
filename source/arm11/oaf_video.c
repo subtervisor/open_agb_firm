@@ -41,7 +41,7 @@
 
 #define COLOR_LUT_ADDR (0x1FF00000u)
 
-// Battery indicator state.
+// Battery indicator state. Initialized from g_oafConfig.showBattery in OAF_videoInit().
 static bool g_showBattery = false;
 
 static KHandle g_convFinishedEvent = 0;
@@ -392,15 +392,33 @@ static inline void setPixelTiled(u8 *const buf, const u32 screenX, const u32 scr
 	buf[offset + 2] = r;
 }
 
-// Region covered by the battery indicator (fixed bounds for cache flush).
-#define BATT_REGION_X  (357u) // Leftmost x of text area ("100%") = 400 - 24 - 15 - 2 = 359, with margin 357
-#define BATT_REGION_Y  (3u)
-#define BATT_REGION_W  (43u)  // To x=399
-#define BATT_REGION_H  (9u)
+// Vertical battery indicator in the top-right corner.
+// Fits within the right-side border strip (x>=360) that is not overwritten
+// by the GPU in any scaler mode.
+//
+// Layout (screen coords):
+//   y=2:       terminal nub (2px wide, centered on body)
+//   y=3..10:   battery body outline 6px wide x 8px tall
+//   y=12..16:  percentage text (up to 15px wide x 5px, centered)
+//
+// Body at x=385..390, nub at x=387..388, text centered on x=387
+// Bounding box for clear/flush: x=380..399, y=2..16
+
+#define BATT_REGION_X  (380u)
+#define BATT_REGION_Y  (2u)
+#define BATT_REGION_W  (20u)  // x 380..399
+#define BATT_REGION_H  (15u)  // y 2..16
+
+#define BATT_BODY_X    (385u)
+#define BATT_BODY_Y    (3u)
+#define BATT_BODY_W    (6u)
+#define BATT_BODY_H    (8u)
+#define BATT_INNER_W   (BATT_BODY_W - 2)  // 4
+#define BATT_INNER_H   (BATT_BODY_H - 2)  // 24
 
 static void drawBatteryRegion(u8 *const buf, const bool draw)
 {
-	// Clear the entire indicator region to black first.
+	// Clear the entire indicator region to black.
 	for(u32 sy = BATT_REGION_Y; sy < BATT_REGION_Y + BATT_REGION_H; sy++)
 		for(u32 sx = BATT_REGION_X; sx < BATT_REGION_X + BATT_REGION_W; sx++)
 			setPixelTiled(buf, sx, sy, 0, 0, 0);
@@ -409,40 +427,38 @@ static void drawBatteryRegion(u8 *const buf, const bool draw)
 
 	const u8 level = MCU_getBatteryLevel();
 
-	// Choose color based on level: green >= 30, yellow >= 15, red < 15.
+	// Color based on level.
 	u8 cr, cg, cb;
 	if(level >= 30)      { cr = 60;  cg = 200; cb = 60;  }
 	else if(level >= 15) { cr = 220; cg = 200; cb = 20;  }
 	else                 { cr = 220; cg = 40;  cb = 40;  }
 
-	// Battery icon: 18x9 body + 1x3 terminal nub, top-right corner.
-	const u32 iconX = 400 - 24;
-	const u32 iconY = 3;
-	const u32 ow = 18, oh = 9;
+	// Terminal nub: 2px wide, 1px tall, centered above body.
+	const u32 nubX = BATT_BODY_X + (BATT_BODY_W / 2) - 1; // 395
+	setPixelTiled(buf, nubX,     BATT_BODY_Y - 1, 255, 255, 255);
+	setPixelTiled(buf, nubX + 1, BATT_BODY_Y - 1, 255, 255, 255);
 
-	// Outline.
-	for(u32 dx = 0; dx < ow; dx++)
+	// Body outline.
+	for(u32 dx = 0; dx < BATT_BODY_W; dx++)
 	{
-		setPixelTiled(buf, iconX + dx, iconY,          255, 255, 255);
-		setPixelTiled(buf, iconX + dx, iconY + oh - 1, 255, 255, 255);
+		setPixelTiled(buf, BATT_BODY_X + dx, BATT_BODY_Y,                    255, 255, 255);
+		setPixelTiled(buf, BATT_BODY_X + dx, BATT_BODY_Y + BATT_BODY_H - 1, 255, 255, 255);
 	}
-	for(u32 dy = 0; dy < oh; dy++)
+	for(u32 dy = 0; dy < BATT_BODY_H; dy++)
 	{
-		setPixelTiled(buf, iconX,          iconY + dy, 255, 255, 255);
-		setPixelTiled(buf, iconX + ow - 1, iconY + dy, 255, 255, 255);
+		setPixelTiled(buf, BATT_BODY_X,                    BATT_BODY_Y + dy, 255, 255, 255);
+		setPixelTiled(buf, BATT_BODY_X + BATT_BODY_W - 1, BATT_BODY_Y + dy, 255, 255, 255);
 	}
 
-	// Terminal nub.
-	for(u32 dy = 3; dy <= 5; dy++)
-		setPixelTiled(buf, iconX + ow, iconY + dy, 255, 255, 255);
+	// Fill interior from bottom up. Full = top, empty = bottom.
+	const u32 fillH = (BATT_INNER_H * level + 50) / 100;
+	const u32 innerX = BATT_BODY_X + 1;
+	const u32 innerY = BATT_BODY_Y + 1;
+	for(u32 dy = 0; dy < fillH; dy++)
+		for(u32 dx = 0; dx < BATT_INNER_W; dx++)
+			setPixelTiled(buf, innerX + dx, innerY + BATT_INNER_H - 1 - dy, cb, cg, cr);
 
-	// Fill interior (16x7) based on level.
-	const u32 fillW = (16 * level + 50) / 100;
-	for(u32 dy = 1; dy <= 7; dy++)
-		for(u32 dx = 1; dx < 1 + fillW; dx++)
-			setPixelTiled(buf, iconX + dx, iconY + dy, cb, cg, cr);
-
-	// Percentage text to the left of the icon.
+	// Percentage text centered below the body.
 	char numStr[4];
 	u32 numLen;
 	if(level >= 100)     { numStr[0] = '1'; numStr[1] = '0'; numStr[2] = '0'; numLen = 3; }
@@ -450,11 +466,10 @@ static void drawBatteryRegion(u8 *const buf, const bool draw)
 	else                 { numStr[0] = '0' + level; numLen = 1; }
 
 	static const u8 percentGlyph[5] = {0x5, 0x1, 0x2, 0x4, 0x5};
-	const u32 textW = numLen * 4 + 3;
-	const u32 textX = iconX - textW - 2;
-	const u32 textY = iconY + 2;
+	const u32 textW = numLen * 4 + 3; // digits + percent sign
+	const u32 textX = BATT_BODY_X + (BATT_BODY_W / 2) - (textW / 2);
+	const u32 textY = BATT_BODY_Y + BATT_BODY_H + 1;
 
-	// Draw digits.
 	u32 cx = textX;
 	for(u32 i = 0; i < numLen; i++)
 	{
@@ -465,18 +480,17 @@ static void drawBatteryRegion(u8 *const buf, const bool draw)
 					setPixelTiled(buf, cx + dx, textY + dy, 255, 255, 255);
 		cx += 4;
 	}
-
-	// Percent sign.
 	for(u32 dy = 0; dy < 5; dy++)
 		for(u32 dx = 0; dx < 3; dx++)
 			if(percentGlyph[dy] & (4 >> dx))
 				setPixelTiled(buf, cx + dx, textY + dy, 255, 255, 255);
 
 flush:
-	// Flush the affected region of the render buffer from cache.
-	// Conservative: flush from the tile row containing BATT_REGION_X to end of buffer.
+	// Flush affected render buffer tiles from cache.
+	// The indicator spans tile rows starting at BATT_REGION_Y/8 = 0 through to the end
+	// of the region. Conservative: flush from the tile column containing BATT_REGION_X.
 	{
-		const u32 startTileRow = BATT_REGION_X / 8;
+		const u32 startTileRow = BATT_REGION_X / 8; // tile "row" in buffer height = screen X
 		const u32 tilesPerRow = 240 / 8;
 		const u32 startOffset = startTileRow * tilesPerRow * 64 * 3;
 		flushDCacheRange((u8*)GPU_RENDER_BUF_ADDR + startOffset,
@@ -682,6 +696,11 @@ KHandle OAF_videoInit(void)
 			GFX_waitForPPF();
 		}
 	}
+
+	// Initialize battery indicator from config.
+	g_showBattery = g_oafConfig.showBattery;
+	if(g_showBattery)
+		drawBatteryRegion((u8*)GPU_RENDER_BUF_ADDR, true);
 
 	return frameReadyEvent;
 }
