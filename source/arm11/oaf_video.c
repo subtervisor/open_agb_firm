@@ -41,6 +41,8 @@
 
 #define COLOR_LUT_ADDR (0x1FF00000u)
 
+// Battery indicator state.
+static bool g_showBattery = false;
 
 static KHandle g_convFinishedEvent = 0;
 static const u32 g_topLcdCurveCorrect[73] =
@@ -344,6 +346,113 @@ static Result dumpFrameTex(void)
 	return res;
 }
 
+// 3x5 digit bitmaps, each row is a byte with 3 LSBs used.
+static const u8 g_digitFont[10][5] =
+{
+	{0x7, 0x5, 0x5, 0x5, 0x7}, // 0
+	{0x2, 0x6, 0x2, 0x2, 0x7}, // 1
+	{0x7, 0x1, 0x7, 0x4, 0x7}, // 2
+	{0x7, 0x1, 0x7, 0x1, 0x7}, // 3
+	{0x5, 0x5, 0x7, 0x1, 0x1}, // 4
+	{0x7, 0x4, 0x7, 0x1, 0x7}, // 5
+	{0x7, 0x4, 0x7, 0x5, 0x7}, // 6
+	{0x7, 0x1, 0x2, 0x4, 0x4}, // 7
+	{0x7, 0x5, 0x7, 0x5, 0x7}, // 8
+	{0x7, 0x5, 0x7, 0x1, 0x7}, // 9
+};
+
+// Set a pixel in the BGR8 framebuffer. Screen coords (x=0..399, y=0..239).
+static inline void setPixelBGR8(u8 *const fb, const u32 x, const u32 y, const u8 b, const u8 g, const u8 r)
+{
+	u8 *const px = &fb[((x * 240) + (239 - y)) * 3];
+	px[0] = b;
+	px[1] = g;
+	px[2] = r;
+}
+
+static void drawBatteryIndicator(u8 *const fb)
+{
+	const u8 level = MCU_getBatteryLevel();
+
+	// Choose color based on level: green >= 30, yellow >= 15, red < 15.
+	u8 r, g, b;
+	if(level >= 30)      { r = 60;  g = 200; b = 60;  }
+	else if(level >= 15) { r = 220; g = 200; b = 20;  }
+	else                 { r = 220; g = 40;  b = 40;  }
+
+	// Battery icon position: top-right corner of screen.
+	// Screen is 400x240. Place icon at right side with some margin.
+	// Icon: 18x9 battery body + 2x3 terminal nub.
+	const u32 iconX = 400 - 24; // x start of battery body
+	const u32 iconY = 3;        // y start
+
+	// Draw battery outline (white).
+	const u8 ow = 18, oh = 9;
+	for(u32 dx = 0; dx < ow; dx++)
+	{
+		setPixelBGR8(fb, iconX + dx, iconY,          255, 255, 255); // top
+		setPixelBGR8(fb, iconX + dx, iconY + oh - 1, 255, 255, 255); // bottom
+	}
+	for(u32 dy = 0; dy < oh; dy++)
+	{
+		setPixelBGR8(fb, iconX,          iconY + dy, 255, 255, 255); // left
+		setPixelBGR8(fb, iconX + ow - 1, iconY + dy, 255, 255, 255); // right
+	}
+
+	// Terminal nub on right side.
+	for(u32 dy = 3; dy <= 5; dy++)
+		setPixelBGR8(fb, iconX + ow, iconY + dy, 255, 255, 255);
+
+	// Fill interior based on level. Interior is 16x7, starts at (iconX+1, iconY+1).
+	const u32 fillW = (16 * level + 50) / 100; // round
+	for(u32 dy = 1; dy <= 7; dy++)
+	{
+		for(u32 dx = 1; dx < 1 + fillW; dx++)
+			setPixelBGR8(fb, iconX + dx, iconY + dy, b, g, r);
+		for(u32 dx = 1 + fillW; dx <= 16; dx++)
+			setPixelBGR8(fb, iconX + dx, iconY + dy, 0, 0, 0);
+	}
+
+	// Draw percentage text to the left of the battery icon.
+	// Format: up to "100%" — using 3x5 font scaled 1x, with 1px spacing.
+	char numStr[4];
+	u32 numLen;
+	if(level >= 100)     { numStr[0] = '1'; numStr[1] = '0'; numStr[2] = '0'; numLen = 3; }
+	else if(level >= 10) { numStr[0] = '0' + level / 10; numStr[1] = '0' + level % 10; numLen = 2; }
+	else                 { numStr[0] = '0' + level; numLen = 1; }
+
+	// '%' sign: just draw a simple 3x5 percent glyph.
+	static const u8 percentGlyph[5] = {0x5, 0x1, 0x2, 0x4, 0x5};
+
+	// Total width: numLen * 4 + 4 (percent sign) - 1.
+	const u32 textW = numLen * 4 + 3;
+	const u32 textX = iconX - textW - 2;
+	const u32 textY = iconY + 2; // vertically center with icon
+
+	// Clear background behind text.
+	for(u32 dy = 0; dy < 5; dy++)
+		for(u32 dx = 0; dx < textW; dx++)
+			setPixelBGR8(fb, textX + dx, textY + dy, 0, 0, 0);
+
+	// Draw digits.
+	u32 cx = textX;
+	for(u32 i = 0; i < numLen; i++)
+	{
+		const u8 *const glyph = g_digitFont[numStr[i] - '0'];
+		for(u32 dy = 0; dy < 5; dy++)
+			for(u32 dx = 0; dx < 3; dx++)
+				if(glyph[dy] & (4 >> dx))
+					setPixelBGR8(fb, cx + dx, textY + dy, 255, 255, 255);
+		cx += 4;
+	}
+
+	// Draw percent sign.
+	for(u32 dy = 0; dy < 5; dy++)
+		for(u32 dx = 0; dx < 3; dx++)
+			if(percentGlyph[dy] & (4 >> dx))
+				setPixelBGR8(fb, cx + dx, textY + dy, 255, 255, 255);
+}
+
 static void convFinishedHandler(UNUSED const u32 intSource)
 {
 	signalEvent(g_convFinishedEvent, false);
@@ -389,10 +498,20 @@ static void gbaGfxHandler(void *args)
 		GX_displayTransfer((u32*)GPU_RENDER_BUF_ADDR, PPF_DIM(240, 400), GFX_getBuffer(GFX_LCD_TOP, GFX_SIDE_LEFT),
 		                   PPF_DIM(240, 400), PPF_O_FMT(GX_BGR8) | PPF_I_FMT(GX_BGR8));
 		GFX_waitForPPF();
+
+		// Toggle battery indicator with SELECT+X.
+		const u32 kHeld = hidKeysHeld();
+		const u32 kDown = hidKeysDown();
+		if(kHeld == (KEY_X | KEY_SELECT) && kDown != 0)
+			g_showBattery = !g_showBattery;
+
+		if(g_showBattery)
+			drawBatteryIndicator((u8*)GFX_getBuffer(GFX_LCD_TOP, GFX_SIDE_LEFT));
+
 		GFX_swapBuffers();
 
 		// Trigger only if both are held and at least one is detected as newly pressed down.
-		if(hidKeysHeld() == (KEY_Y | KEY_SELECT) && hidKeysDown() != 0)
+		if(kHeld == (KEY_Y | KEY_SELECT) && kDown != 0)
 			dumpFrameTex();
 	}
 
