@@ -7,3 +7,6 @@
 [submodule "libraries/inih"]
 	path = libraries/inih
 	url = https://github.com/benhoyt/inih.git
+[submodule "libraries/citrine3d"]
+	path = libraries/citrine3d
+	url = git@github.com:subtervisor/citrine3d.git
