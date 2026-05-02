@@ -381,6 +381,20 @@ void cdParent(char *curDir)
 	}
 }
 
+// True if `name` ends with ".gba" (case-insensitive). FAT preserves case in
+// FILINFO.fname, but the SD card may have been touched on a case-aware host,
+// so compare case-insensitively when classifying the saved path.
+static bool endsWithGbaIgnoreCase(const char *name)
+{
+	const size_t len = strlen(name);
+	if(len < 4) return false;
+	const char *p = name + len - 4;
+	return (p[0] == '.') &&
+	       (p[1] == 'g' || p[1] == 'G') &&
+	       (p[2] == 'b' || p[2] == 'B') &&
+	       (p[3] == 'a' || p[3] == 'A');
+}
+
 // File browser is the boot UI's entry screen. A = activate (enter dir or
 // pick file), B = parent dir, Y = open the in-window menu (Settings/Exit).
 //
@@ -391,29 +405,72 @@ OafBootUiResult runFileBrowser(char outRomPath[512])
 {
 	char *curDir = (char*)fcramAlloc(512);
 	FbDirList *dList = (FbDirList*)fcramAlloc(sizeof(FbDirList));
-	if(curDir == NULL || dList == NULL)
+	char *savedBase = (char*)fcramAlloc(256);
+	if(curDir == NULL || dList == NULL || savedBase == NULL)
 	{
 		if(curDir) fcramFree(curDir);
 		if(dList) fcramFree(dList);
+		if(savedBase) fcramFree(savedBase);
 		setTopStatus("Out of memory opening file browser.");
 		return OAF_UI_RESULT_ERROR;
 	}
 
+	// `lastdir.txt` stores the full path of the last picked ROM (e.g.
+	// "sdmc:/games/foo.gba"). On entry we split it into parent dir + basename;
+	// the parent is what we scan, and the basename — if still present in the
+	// listing — gets pre-selected and scrolled into view. Pre-existing
+	// installs may have a directory there instead; we treat anything that
+	// doesn't look like a .gba file as a directory.
+	savedBase[0] = '\0';
 	if(fsLoadPathFromFile(LASTDIR_FILE, curDir) != RES_OK)
+	{
 		safeStrcpy(curDir, "sdmc:/", 512);
+	}
+	else if(endsWithGbaIgnoreCase(curDir))
+	{
+		char *slash = strrchr(curDir, '/');
+		if(slash != NULL)
+		{
+			safeStrcpy(savedBase, slash + 1, 256);
+			// Truncate `curDir` to the parent dir, keeping the trailing slash
+			// after the volume root ("sdmc:/").
+			size_t parentLen = (size_t)(slash - curDir);
+			if(parentLen > 0 && curDir[parentLen - 1] == ':') parentLen++;
+			curDir[parentLen] = '\0';
+			if(curDir[0] == '\0') safeStrcpy(curDir, "sdmc:/", 512);
+		}
+	}
 
 	Result scanRes = fbScanDir(curDir, dList, ".gba");
 	if(scanRes != RES_OK)
 	{
 		// Last dir went stale — fall back to root.
 		safeStrcpy(curDir, "sdmc:/", 512);
+		savedBase[0] = '\0';
 		scanRes = fbScanDir(curDir, dList, ".gba");
 	}
 
 	int  selected   = 0;        // index into dList->ptrs
 	bool needRescan = false;
+	bool scrollToSelected = false;
 	bool openMenu   = false;    // OpenPopup queued for next frame
 	OafBootUiResult result = OAF_UI_RESULT_EXIT;
+
+	// Pre-select the saved ROM if it's still in this directory's listing.
+	if(savedBase[0] != '\0')
+	{
+		for(u32 i = 0; i < dList->num; ++i)
+		{
+			const char *raw = dList->ptrs[i];
+			if(*raw != FB_ENT_TYPE_FILE) continue;
+			if(strcmp(raw + 1, savedBase) == 0)
+			{
+				selected = (int)i;
+				scrollToSelected = true;
+				break;
+			}
+		}
+	}
 
 	while(true)
 	{
@@ -497,8 +554,14 @@ OafBootUiResult runFileBrowser(char outRomPath[512])
 			}
 			if(wasSelected && i == 0)
 				ImGui::SetItemDefaultFocus();
+			if(wasSelected && scrollToSelected)
+				ImGui::SetScrollHereY(0.5f);
 		}
 		ImGui::EndChild();
+		// One-shot: only the first frame after entering / rescanning the dir
+		// scrolls to the saved ROM. Subsequent frames let the user scroll
+		// freely.
+		scrollToSelected = false;
 
 		ImGui::End();
 
@@ -550,23 +613,15 @@ OafBootUiResult runFileBrowser(char outRomPath[512])
 			// File picked.
 			safeStrcpy(outRomPath, curDir, 512);
 
-			// Persist the parent dir for next launch.
-			char *slash = strrchr(curDir, '/');
-			if(slash != NULL)
-			{
-				size_t parentLen = (size_t)(slash - curDir);
-				if(parentLen > 0 && curDir[parentLen - 1] == ':') parentLen++; // keep "sdmc:/"
-				if(parentLen < 512)
-				{
-					curDir[parentLen] = '\0';
-					(void)fsQuickWrite(LASTDIR_FILE, curDir, parentLen + 1);
-				}
-			}
+			// Persist the full ROM path so the next launch can pre-select and
+			// scroll to it.
+			(void)fsQuickWrite(LASTDIR_FILE, curDir, strlen(curDir) + 1);
 			result = OAF_UI_RESULT_PICKED_ROM;
 			break;
 		}
 	}
 
+	fcramFree(savedBase);
 	fcramFree(dList);
 	fcramFree(curDir);
 	return result;
