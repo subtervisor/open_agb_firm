@@ -4,9 +4,9 @@
 [submodule "tools/lgyFbScaler/lodepng"]
 	path = tools/lgyFbScaler/lodepng
 	url = https://github.com/lvandeve/lodepng.git
-[submodule "libraries/inih"]
-	path = libraries/inih
-	url = https://github.com/benhoyt/inih.git
 [submodule "libraries/citrine3d"]
 	path = libraries/citrine3d
 	url = git@github.com:subtervisor/citrine3d.git
+[submodule "libraries/imgui"]
+	path = libraries/imgui
+	url = https://github.com/ocornut/imgui.git

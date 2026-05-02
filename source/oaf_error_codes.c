@@ -17,10 +17,8 @@
  */
 
 #include "oaf_error_codes.h"
-#include "drivers/gfx.h"
 #ifdef __ARM11__
-#include "arm11/fmt.h"
-#include "arm11/drivers/hid.h"
+#include "arm11/ui_main.h"
 #endif // #ifdef __ARM11__
 
 
@@ -37,30 +35,13 @@ const char* oafResult2String(Result res)
 }
 
 #ifdef __ARM11__
-void printError(Result res)
-{
-	ee_printf("Error: %s.\n", oafResult2String(res));
-}
-
+// printErrorWaitInput is the single-entry error display. The boot UI is
+// always alive on ARM11 (oafBootUiInit panics on failure), so we route
+// straight to the imgui modal — no libn3ds-console fallback because the
+// console is never initialized.
 void printErrorWaitInput(Result res, u32 waitKeys)
 {
-	printError(res);
-
-	// In case we were already in the process of powering off
-	// don't do so now. Ask the user to press power again.
-	// Error messages will get lost otherwise.
-	// Do not clear the power held flag here because the system
-	// is powering off soon.
-	(void)hidGetExtraKeys(KEY_POWER);
-
-	while(1)
-	{
-		GFX_waitForVBlank0();
-
-		hidScanInput();
-
-		if(hidKeysDown() & waitKeys) break;
-		if(hidGetExtraKeys(0) & (KEY_POWER_HELD | KEY_POWER)) break;
-	}
+	(void)waitKeys; // imgui modal always dismisses on A.
+	oafBootUiShowError(res);
 }
 #endif // ifdef __ARM11__

@@ -27,6 +27,7 @@
 #include "arm11/drivers/lgycap.h"
 #include "arm11/bitmap.h"
 #include "drivers/gfx.h"
+#include "arm11/gpu_cmd_lists.h" // GPU_RENDER_BUF_ADDR
 #include "arm11/drivers/mcu.h"
 #include "arm11/fmt.h"
 #include "fsutil.h"
@@ -444,13 +445,32 @@ static KHandle setupFrameCapture(const u8 scaler, const bool colorCorrectionEnab
 
 KHandle OAF_videoInit(void)
 {
-#ifdef NDEBUG
-	// Force black and turn the backlight off on the bottom screen.
-	// Don't turn the backlight off on 2DS (1 panel).
+	// Whatever the boot UI rendered into the LCD/GPU framebuffers is
+	// stale by now — the GBA cmd list only writes the GBA region (and the
+	// scaled border outside it), so unwritten pixels would otherwise show
+	// the last imgui frame. Clear both LCD framebuffers and the GPU render
+	// buffer to black via the PSC fill engine so we land in a known state.
+	// (BGR8, 24-bit fill width, both screens 240xN tiled BGR.)
+	GX_memoryFill(
+	    (u32*)GPU_RENDER_BUF_ADDR, PSC_FILL_24_BITS, 240u * 400u * 3u, 0,
+	    NULL, 0, 0, 0);
+	GFX_waitForPSC0();
+	GX_memoryFill(
+	    (u32*)GFX_getBuffer(GFX_LCD_TOP, GFX_SIDE_LEFT), PSC_FILL_24_BITS,
+	    240u * 400u * 3u, 0,
+	    (u32*)GFX_getBuffer(GFX_LCD_BOT, GFX_SIDE_LEFT), PSC_FILL_24_BITS,
+	    240u * 320u * 3u, 0);
+	GFX_waitForPSC0();
+	GFX_waitForPSC1();
+
+	// Force black and turn the backlight off on the bottom screen. Used to
+	// be NDEBUG-only; we now do it unconditionally because the boot UI
+	// rendered onto the bottom screen and we don't want stale imgui pixels
+	// or tearing leaking through during emulation. 2DS keeps its single
+	// backlight on.
 	GFX_setForceBlack(false, true);
 	if(MCU_getSystemModel() != SYS_MODEL_2DS)
 		GFX_powerOffBacklight(GFX_BL_BOT);
-#endif
 
 	// Initialize frame capture.
 	const u8 scaler = g_oafConfig.scaler;

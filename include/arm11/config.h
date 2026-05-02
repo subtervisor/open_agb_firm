@@ -70,6 +70,7 @@ extern OafConfig g_oafConfig; // Global config in config.c.
 
 
 Result parseOafConfig(const char *const path, OafConfig *cfg, const bool newCfgOnError);
+Result writeOafConfig(const char *const path, const OafConfig *cfg);
 
 #ifdef __cplusplus
 } // extern "C"

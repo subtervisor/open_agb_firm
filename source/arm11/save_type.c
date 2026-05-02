@@ -24,9 +24,7 @@
 #include "fs.h"
 #include "drivers/sha.h"
 #include "oaf_error_codes.h"
-#include "arm11/console.h"
-#include "drivers/gfx.h"
-#include "arm11/drivers/hid.h"
+#include "arm11/ui_main.h"
 
 
 
@@ -203,80 +201,26 @@ u16 getSaveType(const OafConfig *const cfg, const u32 romSize, const char *const
 	else if(!saveOverride && res == RES_NOT_FOUND) return autoSaveType;
 	else if(res != RES_NOT_FOUND)
 	{
-		ee_puts("Could not access gba_db.bin! Press any button to continue.");
-		printErrorWaitInput(res, 0);
+		printErrorWaitInput(res, 0); // imgui-aware (gates inside)
 		return autoSaveType;
 	}
 	debug_printf("saveType: %u\n", saveType);
 
-	if(!saveOverride) goto end;
+	if(!saveOverride) return saveType;
 
-	consoleClear();
-	ee_printf("==Save Type Override Menu==\n"
-	          "Save file: %s\n"
-	          "Save type (autodetected): %u\n"
-			  "Save type (from gba_db.bin): ", (saveExists ? "Found" : "Not found"), autoSaveType);
-	if(res == RES_NOT_FOUND)
-		ee_puts("Not found");
-	else
-		ee_printf("%u\n", saveType);
-	ee_puts("\n"
-	        "=Save Types=\n"
-	        " EEPROM 8k (0, 1)\n"
-	        " EEPROM 64k (2, 3)\n"
-	        " Flash 512k RTC (4, 6, 8)\n"
-	        " Flash 512k (5, 7, 9)\n"
-	        " Flash 1m RTC (10, 12)\n"
-	        " Flash 1m (11, 13)\n"
-	        " SRAM 256k (14)\n"
-	        " None (15)\n\n"
-	        "=Controls=\n"
-	        "Up/Down: Navigate\n"
-	        "A: Select\n"
-	        "X: Delete save file");
-
-	static const u8 saveTypeCursorLut[16] = {0, 0, 1, 1, 2, 3, 2, 3, 2, 3, 4, 5, 4, 5, 6, 7};
-	u8 oldCursor = 0;
-	u8 cursor;
-	if(!cfg->useGbaDb || res == RES_NOT_FOUND)
-		cursor = saveTypeCursorLut[autoSaveType];
-	else
-		cursor = saveTypeCursorLut[saveType];
-	while(1)
-	{
-		ee_printf("\x1b[%u;H ", oldCursor + 7);
-		ee_printf("\x1b[%u;H>", cursor + 7);
-		oldCursor = cursor;
-		GFX_flushBuffers();
-
-		u32 kDown;
-		do
-		{
-			GFX_waitForVBlank0();
-
-			hidScanInput();
-			if(hidGetExtraKeys(0) & (KEY_POWER_HELD | KEY_POWER)) goto end;
-			kDown = hidKeysDown();
-		} while(kDown == 0);
-
-		if((kDown & KEY_DUP) && cursor > 0)        cursor--;
-		else if((kDown & KEY_DDOWN) && cursor < 7) cursor++;
-		else if(kDown & KEY_X)
-		{
-			fUnlink(savePath);
-			ee_printf("\x1b[1;11HDeleted  ");
-		}
-		else if(kDown & KEY_A) break;
-	}
-
-	static const u8 cursorSaveTypeLut[8] = {0, 2, 8, 9, 10, 11, 14, 15};
-	saveType = cursorSaveTypeLut[cursor];
+	// Hand off to the boot UI's save-type override modal. It returns a raw
+	// save-type id 0..15; the EEPROM 8k/64k upgrade for >16 MiB ROMs is
+	// applied below.
+	u16 picked = autoSaveType;
+	bool deleteRequested = false;
+	oafBootUiSaveTypeOverride(autoSaveType, saveType,
+	                          res == RES_OK, saveExists,
+	                          &picked, &deleteRequested);
+	if(deleteRequested) fUnlink(savePath);
+	saveType = picked;
 	if(saveType == SAVE_TYPE_EEPROM_8k || saveType == SAVE_TYPE_EEPROM_64k)
 	{
-		// If ROM bigger than 16 MiB --> SAVE_TYPE_EEPROM_8k_2 or SAVE_TYPE_EEPROM_64k_2.
 		if(romSize > 0x1000000) saveType++;
 	}
-
-end:
 	return saveType;
 }

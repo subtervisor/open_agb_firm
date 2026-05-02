@@ -29,7 +29,14 @@ extern "C"
 
 Result oafParseConfigEarly(void);
 void changeBacklight(s16 amount);
-Result oafInitAndRun(void);
+
+// `*romLaunched` is set to true iff a ROM was loaded and LGY mode is now
+// running. If the user picked Exit from the boot menu (or no ROM was chosen
+// for any other non-error reason), the function returns RES_OK with
+// *romLaunched = false; the caller should skip the emulation main loop in
+// that case but should NOT show an error.
+Result oafInitAndRun(bool *romLaunched);
+
 void oafUpdate(void);
 void oafFinish(void);
 

@@ -6,190 +6,89 @@ ifeq ($(strip $(DEVKITARM)),)
 $(error "Please set DEVKITARM in your environment. export DEVKITARM=<path to>devkitARM")
 endif
 
-TOPDIR ?= $(CURDIR)
-include $(DEVKITARM)/base_rules
-include $(TOPDIR)/../libraries/libn3ds/libn3ds11.mk
+APP_NAME        := open_agb_firm
+APP_C2D         := 1
+AGGRESSIVE_SIZE := 1
 
-#---------------------------------------------------------------------------------
-# TARGET is the name of the output
-# BUILD is the directory where object files & intermediate files will be placed
-# SOURCES is a list of directories containing source code
-# DATA is a list of directories containing data files
-# INCLUDES is a list of directories containing header files
-#---------------------------------------------------------------------------------
-#TARGET		:=	$(notdir $(CURDIR))
-BUILD		:=	build
-SOURCES		+=	../source ../source/arm11 ../libraries/inih
-DATA		:=
-INCLUDES	+=	../include ../libraries
-DEFINES		:=	-D__ARM11__ -D__3DS__ -DLIBN3DS_LEGACY=1 -DVERS_STRING=\"$(VERS_STRING)\" \
-				-DVERS_MAJOR=$(VERS_MAJOR) -DVERS_MINOR=$(VERS_MINOR)
-ASSETS		:=
+APP_DIR   := $(abspath $(CURDIR)/..)
+CITRINE3D := $(APP_DIR)/libraries/citrine3d
+LIBN3DS   := $(APP_DIR)/libraries/libn3ds
+
+# Source roots in addition to $(APP_DIR)/source (which app.mk auto-includes
+# and which holds shared C files like oaf_error_codes.c).
+APP_EXTRA_SOURCES := \
+	$(APP_DIR)/source/arm11 \
+	$(APP_DIR)/source/arm11/ui
+
+APP_EXTRA_INCLUDES := \
+	$(APP_DIR)/include \
+	$(APP_DIR)/libraries \
+	$(APP_DIR)/libraries/imgui
+
+APP_EXTRA_DEFINES := \
+	-fno-unwind-tables \
+	-fno-asynchronous-unwind-tables \
+	-fdata-sections \
+	-fstack-usage \
+	-Wframe-larger-than=512 \
+	-DLIBN3DS_LEGACY=1 \
+	-DVERS_STRING=\"$(VERS_STRING)\" \
+	-DVERS_MAJOR=$(VERS_MAJOR) \
+	-DVERS_MINOR=$(VERS_MINOR) \
+	'-DIM_ASSERT(_EXPR)=((void)(_EXPR))' \
+	-DIMGUI_DISABLE_OBSOLETE_FUNCTIONS=1 \
+	-DIMGUI_DISABLE_DEBUG_TOOLS=1 \
+	-DIMGUI_DISABLE_DEFAULT_FONT=1 \
+	-DIMGUI_DISABLE_FILE_FUNCTIONS=1 \
+	-DIMGUI_DISABLE_DEFAULT_FORMAT_FUNCTIONS=1 \
+	-DIMGUI_DISABLE_DEFAULT_SHELL_FUNCTIONS=1 \
+	-DIMGUI_DISABLE_DEFAULT_ALLOCATORS=1 \
+	-DIMGUI_DISABLE_STB_TRUETYPE_IMPLEMENTATION=1 \
+	-DIMGUI_DISABLE_STB_RECT_PACK_IMPLEMENTATION=1 \
+	-DIMGUI_DISABLE_DEMO_WINDOWS=1
 
 ifneq ($(strip $(NO_DEBUG)),)
-	DEFINES += -DNDEBUG
+APP_EXTRA_DEFINES += -DNDEBUG
 endif
 
-#---------------------------------------------------------------------------------
-# options for code generation
-#---------------------------------------------------------------------------------
-ARCH	:=	-march=armv6k+vfpv2 -mtune=mpcore -mfloat-abi=hard -mtp=soft -marm -mthumb-interwork -masm-syntax-unified
+APP_BUILD       := $(APP_DIR)/build
+APP_ARM11_BUILD := $(APP_BUILD)/arm11
+APP_ARM11_BIN   := $(APP_ARM11_BUILD)/$(APP_NAME)11.bin
 
-CFLAGS	:=	$(ARCH) -std=c23 -O2 -gdwarf-4 -flto -mword-relocations \
-			-ffunction-sections -fno-math-errno -Wall -Wextra
-CFLAGS	+=	$(INCLUDE) $(DEFINES)
+NPROC := $(shell nproc 2>/dev/null || echo 1)
 
-CXXFLAGS	:=	$(ARCH) -std=c++23 -O2 -gdwarf-4 -flto -fno-rtti -fno-exceptions \
-				-mword-relocations -ffunction-sections -fno-math-errno -Wall -Wextra
-CXXFLAGS	+=	$(INCLUDE) $(DEFINES)
+.PHONY: all libcitrine3d libcitrine2d arm11_app clean
 
-ASFLAGS	:=	$(ARCH) -gdwarf-4 -flto $(INCLUDE) $(DEFINES)
-LDFLAGS	=	$(ARCH) -gdwarf-4 -flto -specs=../arm11.specs -Wl,-Map,$(notdir $*.map) -nostartfiles
+all: $(APP_NAME)11.bin
 
-ifeq ($(strip $(NO_DEBUG)),)
-	CFLAGS	:=	$(subst -flto,,$(CFLAGS)) -fstack-protector-strong -fno-inline
-	CXXFLAGS	:=	$(subst -flto,,$(CXXFLAGS)) -fstack-protector-strong -fno-inline
-	ASFLAGS	:=	$(subst -flto,,$(ASFLAGS))
-	LDFLAGS	:=	$(subst -flto,,$(LDFLAGS)) -fstack-protector-strong -fno-inline -Wl,-wrap=malloc,-wrap=calloc,-wrap=free
-endif
+# Build the citrine3d static lib.
+libcitrine3d:
+	@$(MAKE) -j$(NPROC) --no-print-directory -C $(CITRINE3D)/build/arm11 \
+	    AGGRESSIVE_SIZE=$(AGGRESSIVE_SIZE) \
+	    CITRINE3D=$(CITRINE3D) LIBN3DS=$(LIBN3DS)
 
-LIBS	:=	-lm
+# Build the citrine2d static lib (font / sprite helpers).
+libcitrine2d:
+	@$(MAKE) -j$(NPROC) --no-print-directory -C $(CITRINE3D)/citrine2d/build/arm11 \
+	    AGGRESSIVE_SIZE=$(AGGRESSIVE_SIZE) \
+	    CITRINE3D=$(CITRINE3D) LIBN3DS=$(LIBN3DS)
 
-#---------------------------------------------------------------------------------
-# list of directories containing libraries, this must be the top level containing
-# include and lib
-#---------------------------------------------------------------------------------
-LIBDIRS	:=
+# Per-app ARM11 build via citrine3d's app.mk.
+arm11_app: libcitrine3d libcitrine2d
+	@mkdir -p $(APP_ARM11_BUILD)
+	@$(MAKE) -j$(NPROC) --no-print-directory -C $(APP_ARM11_BUILD) \
+	    -f $(CITRINE3D)/build/arm11/app.mk \
+	    AGGRESSIVE_SIZE=$(AGGRESSIVE_SIZE) \
+	    APP_DIR=$(APP_DIR) APP_NAME=$(APP_NAME) APP_C2D=$(APP_C2D) \
+	    APP_EXTRA_SOURCES="$(APP_EXTRA_SOURCES)" \
+	    APP_EXTRA_INCLUDES="$(APP_EXTRA_INCLUDES)" \
+	    APP_EXTRA_DEFINES="$(APP_EXTRA_DEFINES)" \
+	    CITRINE3D=$(CITRINE3D) LIBN3DS=$(LIBN3DS)
 
+# The top-level Makefile expects arm11/open_agb_firm11.bin to exist.
+$(APP_NAME)11.bin: arm11_app
+	@cp $(APP_ARM11_BIN) $@
 
-#---------------------------------------------------------------------------------
-# no real need to edit anything past this point unless you need to add additional
-# rules for different file extensions
-#---------------------------------------------------------------------------------
-ifneq ($(BUILD),$(notdir $(CURDIR)))
-#---------------------------------------------------------------------------------
-
-export OUTPUT	:=	$(CURDIR)/$(TARGET)
-export TOPDIR	:=	$(CURDIR)
-
-export VPATH	:=	$(foreach dir,$(SOURCES),$(CURDIR)/$(dir)) \
-					$(foreach dir,$(DATA),$(CURDIR)/$(dir)) \
-					$(foreach dir,$(ASSETS),$(CURDIR)/$(dir))
-
-export DEPSDIR	:=	$(CURDIR)/$(BUILD)
-
-CFILES		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.c)))
-CPPFILES	:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.cpp)))
-SFILES		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.s)))
-ASSETFILES	:=	$(foreach dir,$(ASSETS),$(notdir $(wildcard $(dir)/*.png)))
-DMA330FILES	:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.dma330)))
-BINFILES	:=	$(foreach dir,$(DATA),$(notdir $(wildcard $(dir)/*.*)))
-
-#---------------------------------------------------------------------------------
-# use CXX for linking C++ projects, CC for standard C
-#---------------------------------------------------------------------------------
-ifeq ($(strip $(CPPFILES)),)
-#---------------------------------------------------------------------------------
-	export LD	:=	$(CC)
-#---------------------------------------------------------------------------------
-else
-#---------------------------------------------------------------------------------
-	export LD	:=	$(CXX)
-#---------------------------------------------------------------------------------
-endif
-#---------------------------------------------------------------------------------
-
-export OFILES_SOURCES 	:=	$(CPPFILES:.cpp=.o) $(CFILES:.c=.o) $(SFILES:.s=.o)
-
-export OFILES_BIN	:=	$(addsuffix .o,$(BINFILES)) $(ASSETFILES:.png=.spla.o)
-
-export OFILES := $(OFILES_BIN) $(OFILES_SOURCES)
-
-export HFILES	:=	$(ASSETFILES:.png=_spla.h) $(addsuffix .h,$(subst .,_,$(BINFILES))) \
-					$(addsuffix .h,$(subst .,_,$(DMA330FILES)))
-
-export INCLUDE	:=	$(foreach dir,$(INCLUDES),-I$(CURDIR)/$(dir)) \
-					$(foreach dir,$(LIBDIRS),-I$(dir)/include) \
-					-I$(CURDIR)/$(BUILD)
-
-export LIBPATHS	:=	$(foreach dir,$(LIBDIRS),-L$(dir)/lib)
-
-
-.PHONY: $(BUILD) all clean
-
-#---------------------------------------------------------------------------------
-all: $(BUILD) $(DEPSDIR)
-	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
-
-$(BUILD):
-	@mkdir -p $@
-
-ifneq ($(DEPSDIR),$(BUILD))
-$(DEPSDIR):
-	@mkdir -p $@
-endif
-
-#---------------------------------------------------------------------------------
 clean:
 	@echo clean ...
-	@rm -fr $(BUILD) $(OUTPUT)11.bin $(OUTPUT)11.elf
-
-#---------------------------------------------------------------------------------
-else
-
-#---------------------------------------------------------------------------------
-# main targets
-#---------------------------------------------------------------------------------
-$(OUTPUT)11.bin	:	$(OUTPUT)11.elf
-	@$(OBJCOPY) -O binary $< $@
-	@echo built ... $(notdir $@)
-
-$(OFILES_SOURCES) : $(HFILES)
-
-$(OUTPUT)11.elf	:	$(OFILES)
-
-#---------------------------------------------------------------------------------
-# you need a rule like this for each extension you use as binary data
-#---------------------------------------------------------------------------------
-%.bin.o	%_bin.h :	%.bin
-#---------------------------------------------------------------------------------
-	@echo $(notdir $<)
-	@$(bin2o)
-
-#---------------------------------------------------------------------------------
-# rules for conversion of .png to .spla
-#---------------------------------------------------------------------------------
-define splashConv
-	$(eval CURBIN := $*.spla)
-	$(eval DEPSFILE := $(DEPSDIR)/$*.spla.d)
-	echo "$(CURBIN).o: $< $1" > $(DEPSFILE)
-	echo "extern const u8" `(echo $(CURBIN) | sed -e 's/^\([0-9]\)/_\1/' | tr . _)`"_end[];" > `(echo $(CURBIN) | tr . _)`.h
-	echo "extern const u8" `(echo $(CURBIN) | sed -e 's/^\([0-9]\)/_\1/' | tr . _)`"[];" >> `(echo $(CURBIN) | tr . _)`.h
-	echo "extern const u32" `(echo $(CURBIN) | sed -e 's/^\([0-9]\)/_\1/' | tr . _)`_size";" >> `(echo $(CURBIN) | tr . _)`.h
-	splashtool -f RGB565 -r $1 $(CURBIN)
-	bin2s $(CURBIN) | $(AS) -o $*.spla.o
-endef
-
-%.spla.o %_spla.h : %.png
-	@echo $(notdir $^)
-	@$(call splashConv,$^)
-
-#---------------------------------------------------------------------------------
-# Rule for conversion of .dma330 to .h
-#---------------------------------------------------------------------------------
-%_dma330.h :	%.dma330
-#---------------------------------------------------------------------------------
-	@echo $(notdir $<)
-	@dma330as $< $@
-
-#---------------------------------------------------------------------------------
-%.elf:
-#---------------------------------------------------------------------------------
-	@echo linking $(notdir $@)
-	@$(LD) $(LDFLAGS) $(OFILES) $(LIBPATHS) $(LIBS) -o $@
-	@$(NM) -CSn $@ > $(notdir $*.lst)
-
--include $(DEPSDIR)/*.d
-
-#---------------------------------------------------------------------------------------
-endif
+	@rm -fr $(APP_BUILD) $(APP_NAME)11.bin $(APP_NAME)11.elf

@@ -23,8 +23,9 @@ Additionally, we are not responsible for any damage that may occur to your syste
 * Download the [latest release](https://github.com/profi200/open_agb_firm/releases/latest) and extract it.
 * Copy the `open_agb_firm.firm` file to your 3DS's SD card at `/luma/payloads` if you're using Luma3DS or elsewhere if you're using fastboot3DS.
 * Copy the `3ds` folder to the root of your 3DS's SD card. Merge folders if asked.
+* Place a BCFNT font on the SD card at `sdmc:/3ds/sysfont.bcfnt` (or `sdmc:/3ds/unifont.bcfnt` as a fallback). The boot UI uses this for text rendering — without it the firm will fail to start.
 * Launch open_agb_firm using Luma3DS by holding START while booting your 3DS or assign it to a slot if you're using fastboot3DS.
-* After open_agb_firm launches, use the file browser to navigate to a `.gba` ROM to run.
+* After open_agb_firm launches, the main menu lets you pick a ROM, edit settings, or exit. Selecting "Select ROM" opens the file browser.
 
 ## Controls
 A/B/L/R/START/SELECT - GBA buttons, respectively

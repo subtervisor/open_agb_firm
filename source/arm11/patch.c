@@ -31,6 +31,16 @@
 #include "arm11/patch.h"
 #include "arm11/power.h"
 #include "drivers/sha.h"
+#include "arm11/ui_main.h"
+
+
+static void warnPatchError(Result res)
+{
+	// Patching surfaces errors via the boot UI's error modal. The legacy
+	// "Press Y+UP to proceed" console flow is gone — the UI is always alive
+	// here.
+	oafBootUiShowError(res);
+}
 
 
 #define min(a, b)  ((size_t) (a) <= (size_t) (b) ? (size_t) (a) : (size_t) (b))
@@ -55,23 +65,6 @@ typedef struct
 	u32 baseRomSize;
 	u32 patchedRomSize;
 } UPSPatch;
-
-
-
-#ifndef NDEBUG
-static u8 elapsedSecs(const RtcTimeDate *before, const RtcTimeDate *after)
-{
-	// RtcTimeDate seconds are represented as hex, i.e. the 59th second is 0x59.
-	// Convert those to decimal so we can do decent math on them.
-	u8 beforeSecs = (before->sec / 16 * 10) + (before->sec % 16);
-	u8 afterSecs = (after->sec / 16 * 10) + (after->sec % 16);
-
-	// NOTE: only accounts for the first minute boundary.
-	if(afterSecs < beforeSecs) afterSecs += 60;
-
-	return afterSecs - beforeSecs;
-}
-#endif
 
 static u16 loadCache(const UPSPatch *patch, Cache *cache, Result *res)
 {
@@ -99,8 +92,6 @@ static bool hasDataLeft(const Cache *cache)
 }
 
 static Result patchIPS(const FHandle patchHandle) {
-	ee_puts("IPS patch found! Patching...");
-
 	const u16 bufferSize = BUFFER_CAPACITY;
 	char *buffer = (char*)calloc(bufferSize, 1);
 	if(buffer == NULL) return RES_OUT_OF_MEM;
@@ -209,7 +200,7 @@ static Result loadUPSMetadata(UPSPatch *patch, Cache *cache)
 	// Patches that would result in a ROM bigger than 32MiB are invalid.
 	if(patch->patchedRomSize > LGY_MAX_ROM_SIZE)
 	{
-		ee_puts("Patched ROM exceeds 32MiB! Skipping patching...");
+		oafBootUiShowMessage("Patched ROM exceeds 32 MiB. Skipping patch.");
 		return RES_INVALID_PATCH;
 	}
 
@@ -217,7 +208,7 @@ static Result loadUPSMetadata(UPSPatch *patch, Cache *cache)
 }
 
 static Result patchUPS(const FHandle patchHandle, u32 *romSize) {
-	ee_puts("UPS patch found! Patching...");
+	oafBootUiUpdateProgress("UPS patch found. Patching…");
 
 	// Reject patches shorter than header + CRC hashes.
 	// Compute length minus hashes when done.
@@ -319,12 +310,7 @@ Result patchRom(const char *const gamePath, u32 *romSize) {
 			res = patchIPS(f);
 
 			if(res != RES_OK && res != RES_INVALID_PATCH) {
-				ee_puts("An error has occurred while patching.\nContinuing is NOT recommended!\n\nPress Y+UP to proceed");
-				while(1){
-					hidScanInput();
-					if(hidKeysHeld() == (KEY_Y | KEY_DUP) && hidKeysDown() != 0) break;
-					if(hidGetExtraKeys(0) & (KEY_POWER_HELD | KEY_POWER)) power_off();
-				}
+				warnPatchError(res);
 			}
 
 			fClose(f);
@@ -333,25 +319,12 @@ Result patchRom(const char *const gamePath, u32 *romSize) {
 		//reset patchPathBase
 		memset(patchPathBase+extensionOffset, '\0', 3);
 
-		if ((res = fOpen(&f, strcat(patchPathBase, "ups"), FA_OPEN_EXISTING | FA_READ)) == RES_OK) 
+		if ((res = fOpen(&f, strcat(patchPathBase, "ups"), FA_OPEN_EXISTING | FA_READ)) == RES_OK)
 		{
-#ifndef NDEBUG
-			RtcTimeDate before, after;
-			MCU_getRtcTimeDate(&before);
-#endif
 			res = patchUPS(f, romSize);
-#ifndef NDEBUG
-			MCU_getRtcTimeDate(&after);
-			debug_printf("Patching took: %us\n", elapsedSecs(&before, &after));
-#endif
 
 			if(res != RES_OK && res != RES_INVALID_PATCH) {
-				ee_puts("An error has occurred while patching.\nContinuing is NOT recommended!\n\nPress Y+UP to proceed");
-				while(1){
-					hidScanInput();
-					if(hidKeysHeld() == (KEY_Y | KEY_DUP) && hidKeysDown() != 0) break;
-					if(hidGetExtraKeys(0) & (KEY_POWER_HELD | KEY_POWER)) power_off();
-				}
+				warnPatchError(res);
 			}
 
 			fClose(f);
@@ -368,9 +341,12 @@ cleanup:
 	free(patchPathBase);
 
 	if(res == RES_INVALID_PATCH) {
-		ee_puts("Patch is not valid! Skipping...\n");
-	} 
-#ifndef NDEBUG	
+		// Common case (no patch file present, or a patch we can't recognise).
+		// Just update the progress modal — popping a blocking modal for
+		// "no patch found" would surprise the user.
+		oafBootUiUpdateProgress("No usable patch found. Continuing.");
+	}
+#ifndef NDEBUG
 	else {
 		u64 sha1[3];
 		sha((u32*)LGY_ROM_LOC, *romSize, (u32*)sha1, SHA_IN_BIG | SHA_1_MODE, SHA_OUT_BIG);

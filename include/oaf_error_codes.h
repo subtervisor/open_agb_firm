@@ -44,7 +44,9 @@ enum
 
 const char* oafResult2String(Result res);
 #ifdef __ARM11__
-void printError(Result res);
+// Show an error modal in the boot UI (imgui), blocking until A or Power.
+// `waitKeys` is preserved for source-compatibility with the legacy console
+// API but ignored — the modal always dismisses on A.
 void printErrorWaitInput(Result res, u32 waitKeys);
 #endif // ifdef __ARM11__
 

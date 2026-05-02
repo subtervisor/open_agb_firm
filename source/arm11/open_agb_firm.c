@@ -28,8 +28,8 @@
 #include "drivers/gfx.h"
 #include "arm11/drivers/hid.h"
 #include "fsutil.h"
-#include "arm11/filebrowser.h"
 #include "arm11/config.h"
+#include "arm11/ui_main.h"
 #include "arm11/save_type.h"
 #include "arm11/patch.h"
 #include "arm11/drivers/codec.h"
@@ -86,7 +86,8 @@ static Result loadGbaRom(const char *const path, u32 *const romSizeOut)
 		if(fileSize > LGY_MAX_ROM_SIZE)
 		{
 			fileSize = LGY_MAX_ROM_SIZE;
-			ee_puts("Warning: ROM file is too big. Expect crashes.");
+			oafBootUiShowMessage("Warning: ROM file is too big (>32 MiB). "
+			                     "Truncating to fit; expect crashes.");
 		}
 
 		u32 read;
@@ -161,53 +162,9 @@ static void updateBacklight(void)
 	}
 }
 
-static Result showFileBrowser(char romAndSavePath[512])
-{
-	Result res;
-	char *lastDir = (char*)calloc(512, 1);
-	if(lastDir != NULL)
-	{
-		do
-		{
-			// Get last ROM launch path.
-			res = fsLoadPathFromFile("lastdir.txt", lastDir);
-			if(res != RES_OK)
-			{
-				if(res == RES_FR_NO_FILE) strcpy(lastDir, "sdmc:/");
-				else                      break;
-			}
-
-			// Show file browser.
-			*romAndSavePath = '\0';
-			res = browseFiles(lastDir, romAndSavePath);
-			if(res == RES_FR_NO_PATH)
-			{
-				// Second chance in case the last dir has been deleted.
-				strcpy(lastDir, "sdmc:/");
-				res = browseFiles(lastDir, romAndSavePath);
-				if(res != RES_OK) break;
-			}
-			else if(res != RES_OK) break;
-
-			size_t cmpLen = strrchr(romAndSavePath, '/') - romAndSavePath;
-			if((size_t)(strchr(romAndSavePath, '/') - romAndSavePath) == cmpLen) cmpLen++; // Keep the first '/'.
-			if(cmpLen < 512)
-			{
-				if(cmpLen < strlen(lastDir) || strncmp(lastDir, romAndSavePath, cmpLen) != 0)
-				{
-					strncpy(lastDir, romAndSavePath, cmpLen);
-					lastDir[cmpLen] = '\0';
-					res = fsQuickWrite("lastdir.txt", lastDir, cmpLen + 1);
-				}
-			}
-		} while(0);
-
-		free(lastDir);
-	}
-	else res = RES_OUT_OF_MEM;
-
-	return res;
-}
+// showFileBrowser was the legacy console-based file picker. The imgui boot
+// UI takes its place via oafBootUiRunMenu (which delegates to the imgui
+// file browser screen and persists lastdir.txt itself).
 
 static void rom2GameCfgPath(char romPath[512])
 {
@@ -273,8 +230,10 @@ Result oafParseConfigEarly(void)
 	return res;
 }
 
-Result oafInitAndRun(void)
+Result oafInitAndRun(bool *romLaunched)
 {
+	if(romLaunched != NULL) *romLaunched = false;
+
 	Result res;
 	char *const filePath = (char*)calloc(512, 1);
 	if(filePath != NULL)
@@ -282,13 +241,24 @@ Result oafInitAndRun(void)
 		do
 		{
 			// Try to load the ROM path from autoboot.txt.
-			// If this file doesn't exist show the file browser.
+			// If this file doesn't exist show the imgui main menu.
 			res = fsLoadPathFromFile("autoboot.txt", filePath);
 			if(res == RES_FR_NO_FILE)
 			{
-				res = showFileBrowser(filePath);
-				if(res != RES_OK || *filePath == '\0') break;
-				ee_puts("Loading...");
+				const OafBootUiResult uiRes = oafBootUiRunMenu(filePath);
+				if(uiRes == OAF_UI_RESULT_EXIT)
+				{
+					// User chose to leave the menu — clean shutdown, not
+					// an error. Caller skips the emulator loop.
+					res = RES_OK;
+					break;
+				}
+				if(uiRes != OAF_UI_RESULT_PICKED_ROM || *filePath == '\0')
+				{
+					res = RES_INVALID_ARG;
+					break;
+				}
+				res = RES_OK;
 			}
 			else if(res != RES_OK) break;
 
@@ -297,10 +267,19 @@ Result oafInitAndRun(void)
 			if(romFilePath == NULL) { res = RES_OUT_OF_MEM; break; }
 			strcpy(romFilePath, filePath);
 
+			// Note: the boot UI stays alive through ROM load + save type
+			// detection + patching. main.c reserved the LGY ROM zone
+			// (FCRAM_BASE..+32MB) as the very first FCRAM allocation, so the
+			// UI's allocations live above that zone and aren't clobbered
+			// when fRead writes the ROM directly to LGY_ROM_LOC. Shutdown
+			// happens just before LGY11_switchMode, below.
+
 			// Load the ROM file.
+			oafBootUiBeginProgress("Loading");
+			oafBootUiUpdateProgress("Reading ROM from SD…");
 			u32 romSize;
 			res = loadGbaRom(filePath, &romSize);
-			if(res != RES_OK) break;
+			if(res != RES_OK) { oafBootUiEndProgress(); break; }
 
 			// Load the per-game config.
 			rom2GameCfgPath(filePath);
@@ -309,6 +288,7 @@ Result oafInitAndRun(void)
 
 			// Adjust the path for the save file and get save type.
 			gameCfg2SavePath(filePath, g_oafConfig.saveSlot);
+			oafBootUiUpdateProgress("Detecting save type…");
 			u16 saveType;
 			if(g_oafConfig.saveType != 0xFF)
 				saveType = g_oafConfig.saveType;
@@ -317,12 +297,23 @@ Result oafInitAndRun(void)
 			else
 				saveType = detectSaveType(romSize, g_oafConfig.defaultSave);
 
+			oafBootUiUpdateProgress("Applying patches…");
 			patchRom(romFilePath, &romSize);
 			free(romFilePath);
+			oafBootUiEndProgress();
 
 			// Set audio output and volume.
 			CODEC_setAudioOutput(g_oafConfig.audioOut);
 			CODEC_setVolumeOverride(g_oafConfig.volume);
+
+			// Tear down the boot UI now — BEFORE OAF_videoInit. Order
+			// matters: OAF_videoInit configures GBA-specific GPU state
+			// (frame capture, patched gpu cmd list, gbaGfxHandler task),
+			// and C3D_Fini inside oafBootUiShutdown resets GPU registers
+			// in a way that clobbers that setup. The LGY ROM zone
+			// reservation made in main() is intentionally NOT freed — LGY
+			// hardware owns it now.
+			oafBootUiShutdown();
 
 			// Prepare ARM9 for GBA mode + save loading.
 			res = LGY_prepareGbaMode(g_oafConfig.directBoot, saveType, filePath);
@@ -341,6 +332,8 @@ Result oafInitAndRun(void)
 				// Sync LgyCap start with LCD VBlank.
 				GFX_waitForVBlank0();
 				LGY11_switchMode();
+
+				if(romLaunched != NULL) *romLaunched = true;
 			}
 		} while(0);
 	}
